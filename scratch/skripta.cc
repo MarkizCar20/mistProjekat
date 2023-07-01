@@ -13,9 +13,21 @@
 
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
+#include "ns3/csma-module.h"
 #include "ns3/internet-module.h"
+#include "ns3/boolean.h"
+#include "ns3/config.h"
+#include "ns3/double.h"
+#include "ns3/internet-stack-helper.h"
+#include "ns3/ipv4-address-helper.h"
+#include "ns3/mobility-helper.h"
+#include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
 #include "ns3/ssid.h"
+#include "ns3/string.h"
+#include "ns3/udp-client-server-helper.h"
+#include "ns3/uinteger.h"
+#include "ns3/yans-wifi-channel.h"
 #include "ns3/yans-wifi-helper.h" 
 
 using namespace ns3;
@@ -33,14 +45,14 @@ main(int argc, char* argv[])
     }
 
     NodeContainer wifiStaNodes;
-    wifiStaNodes.create(10);
+    wifiStaNodes.Create(10);
     NodeContainer wifiApNode;
-    wifiApNode.create(1);
+    wifiApNode.Create(1);
 
     //creating a channel
     YansWifiChannelHelper channel = YansWifiChannelHelper::Default();
-    YansWifiPhyHelper phy = YansWifiPhyHelper::Default();
-    phy.SetChannel(channel.create());
+    YansWifiPhyHelper phy;
+    phy.SetChannel(channel.Create());
 
     //mac type used for installation
     WifiMacHelper mac;
@@ -53,14 +65,13 @@ main(int argc, char* argv[])
     NetDeviceContainer wifiApDevice;
 
     //Installation
-    mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid), "Active-Probing", BooleanValue(false));
-    wifiStaDevices = wifi.install(phy, mac, wifiStaNodes);
+    mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+    wifiStaDevices = wifi.Install(phy, mac, wifiStaNodes);
     mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
-    wifiApDevice = wifi.install(phy, mac, wifiApNode);
+    wifiApDevice = wifi.Install(phy, mac, wifiApNode);
 
     //Setting up random movement
     MobilityHelper mobility;
-
     mobility.SetPositionAllocator("ns3::GridPositionAllocator",
                                 "MinX",
                                 DoubleValue(0.0),
@@ -78,10 +89,10 @@ main(int argc, char* argv[])
     mobility.SetMobilityModel("ns3::RandomWalk2dMobilityModel",
                             "Bounds",
                             RectangleValue(Rectangle(-50, 50, -50, 50)));
-    mobility.install(wifiStaNodes);
+    mobility.Install(wifiStaNodes);
     
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-    mobility.install(wifiApNode);
+    mobility.Install(wifiApNode);
 
     InternetStackHelper stack;
     stack.Install(wifiApNode);
@@ -96,22 +107,30 @@ main(int argc, char* argv[])
     apNodeInterface = address.Assign(wifiApDevice);
 
     ApplicationContainer serverApp;
-    UdpEchoServerHelper echoServer(12);
+    UdpServerHelper echoServer(12);
 
-    serverApp = echoServer.install(wifiStaNodes.Get(0));
+    serverApp = echoServer.Install(wifiStaNodes.Get(0));
     serverApp.Start(Seconds(0.0));
-    serverApp.Stop(Seconds(11.0));
+    serverApp.Stop(Seconds(15.0));
 
     UdpClientHelper echoClient(staNodesInterface.GetAddress(0), 12);
     echoClient.SetAttribute("MaxPackets", UintegerValue(4294967295U));
     echoClient.SetAttribute("Interval", TimeValue(Time("0.00001"))); // packets/s
     echoClient.SetAttribute("PacketSize", UintegerValue(1472));
-    ApplicationContainer clientApp = echoClient.install(wifiApNode.Get(0));
+    ApplicationContainer clientApp = echoClient.Install(wifiApNode.Get(0));
     clientApp.Start(Seconds(1.0));
-    clientApp.Stop(Seconds(11.0)); 
+    clientApp.Stop(Seconds(14.0)); 
 
-
+    Simulator::Stop(Seconds(15));
     Simulator::Run();
+
+    double throughput = 0;
+
+    uint64_t totalPacketsThrough = DynamicCast<UdpServer>(serverApp.Get(0))->GetReceived();
+    throughput = totalPacketsThrough * 1472 * 8 / (12 * 1000000.0);
+
+    std::cout << throughput << " Mbit/s" << std::endl;
+
     Simulator::Destroy();
     return 0;
 }
