@@ -44,6 +44,7 @@ main(int argc, char* argv[])
 
     //mac type used for installation
     WifiMacHelper mac;
+    Ssid ssid = Ssid("ns-3-ssid");
 
     //setting WiFi standard, setting up NetDevices
     WifiHelper wifi;
@@ -52,9 +53,65 @@ main(int argc, char* argv[])
     NetDeviceContainer wifiApDevice;
 
     //Installation
-    mac.SetType("ns3::StaWifiMac");
+    mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid), "Active-Probing", BooleanValue(false));
     wifiStaDevices = wifi.install(phy, mac, wifiStaNodes);
-    mac.SetType("ns3::ApWifiMac");
-    wifiApNode = wifi.install(phy, mac, wifiApNode);
+    mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+    wifiApDevice = wifi.install(phy, mac, wifiApNode);
 
+    //Setting up random movement
+    MobilityHelper mobility;
+
+    mobility.SetPositionAllocator("ns3::GridPositionAllocator",
+                                "MinX",
+                                DoubleValue(0.0),
+                                "MinY",
+                                DoubleValue(0.0),
+                                "DeltaX",
+                                DoubleValue(5.0),
+                                "DeltaY",
+                                DoubleValue(10.0),
+                                "GridWidth",
+                                UintegerValue(3),
+                                "LayoutType",
+                                StringValue("RowFirst"));
+    
+    mobility.SetMobilityModel("ns3::RandomWalk2dMobilityModel",
+                            "Bounds",
+                            RectangleValue(Rectangle(-50, 50, -50, 50)));
+    mobility.install(wifiStaNodes);
+    
+    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    mobility.install(wifiApNode);
+
+    InternetStackHelper stack;
+    stack.Install(wifiApNode);
+    stack.Install(wifiStaNodes);
+
+    Ipv4AddressHelper address;
+    address.SetBase("192.168.3.0", "255.255.255.0");
+    Ipv4InterfaceContainer staNodesInterface;
+    Ipv4InterfaceContainer apNodeInterface;
+
+    staNodesInterface = address.Assign(wifiStaDevices);
+    apNodeInterface = address.Assign(wifiApDevice);
+
+    ApplicationContainer serverApp;
+    UdpEchoServerHelper echoServer(12);
+
+    serverApp = echoServer.install(wifiStaNodes.Get(0));
+    serverApp.Start(Seconds(0.0));
+    serverApp.Stop(Seconds(11.0));
+
+    UdpClientHelper echoClient(staNodesInterface.GetAddress(0), 12);
+    echoClient.SetAttribute("MaxPackets", UintegerValue(4294967295U));
+    echoClient.SetAttribute("Interval", TimeValue(Time("0.00001"))); // packets/s
+    echoClient.SetAttribute("PacketSize", UintegerValue(1472));
+    ApplicationContainer clientApp = echoClient.install(wifiApNode.Get(0));
+    clientApp.Start(Seconds(1.0));
+    clientApp.Stop(Seconds(11.0)); 
+
+
+    Simulator::Run();
+    Simulator::Destroy();
+    return 0;
 }
