@@ -416,36 +416,208 @@ main(int argc, char* argv[])
                 datarate = value4*8;
                 break;
             }
-
         }
 
+        wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
+                                     "DataMode", DataMode,
+                                     "ControlMode", DataRate);
+        
+        NetDeviceContainer staDevice;
+        NetDeviceContainer apDevice;
+        /* Setting up all the macs for both Yans and Spectrum, installing devices */
+
+        if (wifiType = "ns3::YansWifiPhy")
+        {
+            mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+            staDevice = wifi.Install(phy, mac, wifiStaNode);
+            mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+            apDevice = wifi.install(phy, mac, wifiApNode);
+        }
+        else
+        {
+            mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+            staDevice = wifi.Install(spectrumPhy, mac, wifiStaNode);
+            mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+            apDevice = wifi.Install(spectrumPhy, mac, wifiApNode);
+        }
+
+        if (i <= 7)
+        {
+            Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HtConfiguration/"
+                        "ShortGuardIntervalSupported",
+                        BooleanValue(false));
+        }
+        else if (i > 7 && i <= 15)
+        {
+            Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HtConfiguration/"
+                        "ShortGuardIntervalSupported",
+                        BooleanValue(false));
+        }
+        else
+        {
+            Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HtConfiguration/"
+                        "ShortGuardIntervalSupported",
+                        BooleanValue(true));
+        }
+
+        /* Setting up Mobility for all three nodes */
+        MobilityHelper mobility;
+        Ptr<ListPositionAllocator> positionAlloc = CreateObject<ListPositionAllocator>();
+
+        positionAlloc->Add(Vector(0.0, 0.0, 0.0));
+        positionAlloc->Add(Vector(distance, 0.0, 0.0));
+        positionAlloc->Add(Vector(distance, distance, 0.0));
+        mobility.SetPositionAllocator(positionAlloc);
+
+        mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+
+        mobility.Install(wifiApNode);
+        mobility.Install(wifiStaNode);
+        mobility.Install(interferingNode);
+
+        /* Internet stack */
+        InternetStackHelper stack;
+        stack.Install(wifiApNode);
+        stack.Install(wifiStaNode);
+
+        Ipv4AddressHelper address;
+        address.SetBase("192.168.1.0", "255.255.255.0");
+        Ipv4InterfaceContainer staNodeInterface;
+        Ipv4InterfaceContainer apNodeInterface;
+
+        staNodeInterface = address.Assign(staDevice);
+        apNodeInterface = address.Assign(apDevice);
+
+        /* Setting up UDP and TCP Apps */
+        if (udp)
+        {
+            //Udp setup
+            uint16_t port = 12;
+            UdpServerHelper server(port);
+            serverApp = server.Install(wifiStaNode.Get(0));
+            serverApp.Start(Seconds(0.0));
+            serverApp.Stop(Seconds(simulationTime + 1));
+
+            UdpClientHelper client(staNodeInterface.GetAddress(0), port);
+            client.SetAttribute("MaxPackets", UintegerValue(4294967295U));
+            client.SetAttribute("Interval", TimeValue(Time("0.0001"))); //
+            client.SetAttribute("PacketSize", UintegerValue(payloadSize));
+            ApplicationContainer clientApp = client.Install(wifiApNode.Get(0));
+            clientApp.Start(Seconds(1.0));
+            clientApp.Stop(Seconds(simulationTime + 1));
+        }
+        else
+        {
+            //TCP setup
+            uint16_t port = 50000;
+            Address localAddress(InetSocketAddress(Ipv4Address::GetAny(), port));
+            PacketSinkHelper packetSinkHelper("ns3::SocketTcpFactory", localAddress);
+            serverApp = packetSinkHelper.Install(wifiStaNode.Get(0));
+            serverApp.Start(Seconds(0.0));
+            serverApp.Stop(Seconds(simulationTime + 1));
+
+            OnOffHelper onoff("ns3::TcpSocketFactory", Ipv4Address::GetAny());
+            onoff.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+            onoff.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+            onoff.SetAttribute("PacketSize", UintegerValue(payloadSize));
+            onoff.SetAttribute("DataRate", DataRateValue(1000000000)); bit/s
+
+            AddressValue remoteAddress(InetSocketAddress(staNodeInterface.GetAddress(0), port));
+            onoff.SetAttribute("Remote", remoteAddress);
+            ApplicationContainerContainer clientApp = onoff.Install(wifiApNode.Get(0));
+            clientApp.Start(Seconds(1.0));
+            clientApp.Stop(Seconds(simulationTime + 1));
+        }
+
+        /* Confinguring Waveform generation */
+        Ptr<SpectrumValue> wgPsd = Create<SpectrumValue>(i <= 15 ? SpectrumModelWifi5180MHz : SpectrumModelWifi5190MHz);
+        *wgPsd = waveformPower / 20e6; /* The power spred over 20Mhz */
+        NS_LOG_INFO("wgPsd: " << *wgPsd << " Integrated power: " < Integral(*(GetPointer(wgPsd))));
+
+        if (wifiType = "ns3::SpectrumWifiPhy")
+        {
+            WaveformGeneratorHelper waveformGeneratorHelper;
+            waveformGeneratorHelper.SetChannel(spectrumChannel);
+            waveformGeneratorHelper.SetTxPowerSpectralDensity(wgPsd);
+
+            waveformGeneratorHelper.SetPhyAttribute("Period", TimeValue(Seconds(0.0007)));
+            waveformGeneratorHelper.SetPhyAttribute("DutyCycle", DoubleValue(1));
+            NetDeviceContainer waveformGeneratorHelper.Install(interferingNode);
+
+            Simulator::Schedule(Seconds(0.002), &WaweformGenerator::Start,
+                                                WaweformGeneratorDevices.Get(0)
+                                                    ->GetObject<NonCommunicatingNetDevice>()
+                                                    ->GetPhy()
+                                                    ->GetObject<WaweformGenerator>());
+        }
+
+        Config::ConnectWithoutContext("/NodeList/0/DeviceList/*/Phy/MonitorSnifferRx", MakeCallback(&MonitorSniffRx));
+
+        if (enablePcap)
+        {
+            phy.SetPcapDataLinkType(WifiPhyHelper::DLT_IEEE802_11_RADIO);
+            std::stringstream ss;
+            ss << "wifi-spectrum-po-primeru" << i;
+            phy.EnablePcap(ss.str(), apDevice);
+        }
+        g_signalDbmAvg = 0;
+        g_noiseDbmAvg = 0;
+        g_samples = 0;
+
+        /* Making sure everything is tuned properly */
+        Ptr<NetDevice> staDevicePtr = staDevice.Get(0);
+        Ptr<WifiPhy> wifiPhyPtr = staDevicePtr->GetObject<WifiNetDevice>()->GetPhy();
+        if (i <= 15)
+        {
+            NS_ABORT_MSG_IF(wifiPhyPtr->GetChannelWidth() != 20,
+                            "Error: Channel width must be 20Mhz for MCS index <=15");
+            NS_ABORT_MSG_IF(
+                wifiPhyPtr->GetFrequency() != 5180,
+                            "Error: Channel frequency must be tuned to 5180 Mhz");
+        }
+        else
+        {
+            NS_ABORT_MSG_IF(wifiPhyPtr->GetChannelWidth() != 40,
+                            "Error: Channel width must be 40Mhz for MCS Index >15");
+            NS_ABORT_MSG_IF(
+                wifiPhyPtr->GetFrequency() != 5190,
+                            "Error: Channel frequency must be tuned to 5190 Mhz")
+        }
+
+        Simulator::Run();
+        
+        double throughput = 0;
+        uint64_t totalPacketsThrough = 0;
+        if (udp)
+        {
+            /* UDP Packet counts */
+            totalPacketsThrough = DynamicCast<UdpServer>(serverApp.Get(0))->GetReceived();
+            throughput = totalPacketsThrough * payloadSize * 8 / (simulationTime * 1000000.0); /*Mbits/s*/
+        }
+        else
+        {
+            /* TCP Packet counts */
+            uint64_t totalBytesRx = DynamicCast<PacketSink>(serverApp.Get(0))->GetTotalRx();
+            totalPacketsThrough = totalBytesRx / tcpPacketSize;
+            throughput = totalBytesRx * 8/ (simulationTime * 1000000.0);
+        }
+        std::cout << std::setw(5) << i << std::setw(6) << (i % 8) << std::setprecision(2)
+                  << std::fixed << std::setw(10) << datarate << std::setw(12) << throughput
+                  << std::setw(8) << totalPacketsThrough;
+        if (totalPacketsThrough > 0)
+        {
+            std::cout << std::setw(12) << g_signalDbmAvg << std::setw(12) << g_noiseDbmAvg
+                      << std::setw(12) << (g_signalDbmAvg - g_noiseDbmAvg) << std::endl;
+        }
+        else
+        {
+            std::cout << std::setw(12) << "N/A" << std::setw(12) << "N/A" << std::setw(12) << "N/A"
+                      << std::endl;
+        }
+        Simulator::Destroy();
     }
 
-    ApplicationContainer serverApp;
-    UdpServerHelper echoServer(12);
+   
 
-    serverApp = echoServer.Install(wifiStaNodes.Get(0));
-    serverApp.Start(Seconds(0.0));
-    serverApp.Stop(Seconds(15.0));
-
-    UdpClientHelper echoClient(staNodesInterface.GetAddress(0), 12);
-    echoClient.SetAttribute("MaxPackets", UintegerValue(4294967295U));
-    echoClient.SetAttribute("Interval", TimeValue(Time("0.00001"))); // packets/s
-    echoClient.SetAttribute("PacketSize", UintegerValue(1472));
-    ApplicationContainer clientApp = echoClient.Install(wifiApNode.Get(0));
-    clientApp.Start(Seconds(1.0));
-    clientApp.Stop(Seconds(14.0)); 
-
-    Simulator::Stop(Seconds(15));
-    Simulator::Run();
-
-    double throughput = 0;
-
-    uint64_t totalPacketsThrough = DynamicCast<UdpServer>(serverApp.Get(0))->GetReceived();
-    throughput = totalPacketsThrough * 1472 * 8 / (12 * 1000000.0);
-    
-    std::cout << throughput << " Mbit/s" << std::endl;
-
-    Simulator::Destroy();
     return 0;
 }
